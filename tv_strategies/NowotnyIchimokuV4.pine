@@ -1,0 +1,88 @@
+//@version=4
+strategy("NowotnyIchimokuV4", overlay=true, default_qty_value=100, default_qty_type=strategy.percent_of_equity)
+
+startYear = input(2019, minval=1970)
+startMonth = input(5, minval=1)
+endYear = input(2022, minval=1970)
+endMonth = input(5, minval=1)
+
+
+smoothK = input(3, "K", minval=1)
+smoothD = input(3, "D", minval=1)
+lengthRSI = input(14, "RSI Length", minval=1)
+lengthStoch = input(14, "Stochastic Length", minval=1)
+src = input(close, title="RSI Source")
+rsi1 = rsi(src, lengthRSI)
+k = sma(stoch(rsi1, rsi1, rsi1, lengthStoch), smoothK)
+d = sma(k, smoothD)
+
+
+length = input(20, minval=1)
+srcb = input(close, title="Source")
+mult = input(2.5, minval=0.001, maxval=50, title="StdDev")
+fact = input(1.00, title="Factor")
+basis = hma(srcb, length)
+dev = mult * stdev(src, length)
+upper = (basis + dev) * fact
+offset = input(0, "Offset", type = input.integer, minval = -500, maxval = 500)
+p1a = plot(upper, "Upper", color=color.teal, offset = offset)
+
+
+conversionPeriods = input(9, minval=1, title="Conversion Line Length")
+basePeriods = input(26, minval=1, title="Base Line Length")
+laggingSpan2Periods = input(52, minval=1, title="Lagging Span 2 Length")
+displacement = input(26, minval=1, title="Displacement")
+donchian(len) => avg(lowest(len), highest(len))
+conversionLine = donchian(conversionPeriods)
+baseLine = donchian(basePeriods)
+leadLine1 = avg(conversionLine, baseLine)
+leadLine2 = donchian(laggingSpan2Periods)
+plot(conversionLine, color=#0496ff, title="Conversion Line")
+plot(baseLine, color=#991515, title="Base Line")
+plot(close, offset = -displacement + 1, color=#459915, title="Lagging Span")
+p1 = plot(leadLine1, offset = displacement - 1, color=color.green,
+	 title="Lead 1")
+p2 = plot(leadLine2, offset = displacement - 1, color=color.red,
+	 title="Lead 2")
+fill(p1, p2, color = leadLine1 > leadLine2 ? color.green : color.red)
+
+isCloudGreen = leadLine1 > leadLine2
+upperCloud = leadLine1 > leadLine2 ? leadLine1 : leadLine2
+lowerCloud = leadLine1 < leadLine2 ? leadLine1 : leadLine2
+
+
+short = (high > upper and strategy.position_avg_price * 1.01 < close) or (k > 80 and strategy.position_avg_price * 1.1 < close)
+
+
+long = close > open and close > lowerCloud[25] * 1.04 and close > upperCloud[25] and isCloudGreen and conversionLine > baseLine and close > conversionLine[25] and close > upperCloud[50]
+
+long_allowed = true
+long_allowed := long_allowed[1]
+
+if long[1]
+    long_allowed := false
+
+if not isCloudGreen
+    long_allowed := true
+
+long := long and long_allowed
+
+
+start = timestamp(startYear,startMonth,1,0,0)
+end = timestamp(endYear,endMonth,1,0,0)
+
+
+
+if time >= start and time < end
+    if long and not short and strategy.position_size == 0
+        strategy.entry("Buy", strategy.long)
+
+        stop = lowerCloud[25]
+        altStop = close * 0.92
+        if(stop < altStop)
+            stop := altStop
+
+        strategy.exit("Buy", stop=stop, limit=close + (2 * (close - lowerCloud[25])))
+
+    if short
+        strategy.close("Buy")
