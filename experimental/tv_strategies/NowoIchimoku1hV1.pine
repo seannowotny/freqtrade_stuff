@@ -1,5 +1,5 @@
 //@version=4
-strategy("NowotnyIchimokuV4", overlay=true, default_qty_value=100, default_qty_type=strategy.percent_of_equity)
+strategy("NowoIchimokuV1", overlay=true, default_qty_value=100, default_qty_type=strategy.percent_of_equity)
 
 startYear = input(2019, minval=1970)
 startMonth = input(5, minval=1)

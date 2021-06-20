@@ -8,6 +8,7 @@ from typing import Callable
 import numpy as np  # noqa
 import pandas as pd  # noqa
 from pandas import DataFrame
+from freqtrade.strategy import DecimalParameter, IntParameter
 
 from freqtrade.strategy import IStrategy
 
@@ -58,7 +59,7 @@ def bollinger_bands(series: Series, moving_average='sma', length=20, mult=2.0) -
     })
 
 
-class NowotnyIchimokuV2(IStrategy):
+class NowoIchimoku1hV2(IStrategy):
     # Optimal timeframe for the strategy
     timeframe = '1h'
 
@@ -68,11 +69,16 @@ class NowotnyIchimokuV2(IStrategy):
 
     use_custom_stoploss = True
 
+    trailing_stop = True
+
     minimal_roi = {
-        "0": 999
+        "0": 0.427,
+        "448": 0.202,
+        "1123": 0.089,
+        "2355": 0
     }
 
-    stoploss = -0.08
+    stoploss = -0.345
 
     plot_config = {
         'main_plot': {
@@ -87,45 +93,69 @@ class NowotnyIchimokuV2(IStrategy):
             # },
             # 'conversion_line': {'color': 'blue'},
             # 'base_line': {'color': 'orange'},
+            'upper': {
+                'color': 'blue'
+            }
         },
+        'subplots': {
+            'Buy Allowed': {
+                'buy_allowed': {
+                    'color': 'blue'
+                },
+            },
+            'Should Buy': {
+                'should_buy': {
+                    'color': 'green'
+                },
+            },
+            'Is Cloud Green': {
+                'is_cloud_green': {
+                    'color': 'black'
+                }
+            }
+        }
     }
 
-    def custom_sell(self, pair: str, trade: 'Trade', current_time: 'datetime', current_rate: float,
-                    current_profit: float, **kwargs):
-
-        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-        last_candle = dataframe.iloc[-1].squeeze()
-
-        # In dry/live runs trade open date will not match candle open date therefore it must be
-        # rounded.
-        trade_date = timeframe_to_prev_date(self.timeframe, trade.open_date_utc)
-        # Look up trade candle.
-        trade_candle = dataframe.loc[dataframe['date'] == trade_date]
-
-        # trade_candle may be empty for trades that just opened as it is still incomplete.
-        if not trade_candle.empty:
-            trade_candle = trade_candle.squeeze()
-
-            if last_candle['srsi_k'] > 80 & current_profit > 1.1:
-                return 'srsi_k above 80 with profit above 10%'
-
-            if current_rate > last_candle['upper'] & current_profit > 1.01:
-                return 'current rate above upper band with profit above 1%'
-
-            limit = trade_candle['close'] + ((trade_candle['close'] - trade_candle['shifted_lower_cloud']) * 2)
-
-            if current_rate > limit:
-                return 'current rate above limit'
-
-            if current_rate < trade_candle['shifted_lower_cloud']:
-                return 'current rate below stop'
+    srsi_k_min_profit = DecimalParameter(0.01, 0.99, decimals=3, default=0.036, space="sell")
+    above_upper_min_profit = DecimalParameter(0.001, 0.5, decimals=3, default=0.011, space="sell")
+    limit_factor = DecimalParameter(0.5, 5, decimals=3, default=1.918, space="sell")
+    lower_cloud_factor = DecimalParameter(0.5, 1.5, decimals=3, default=0.971, space="sell")
+    close_above_shifted_upper_cloud = DecimalParameter(0.5, 2, decimals=3, default=0.603, space="buy")
 
     def custom_stoploss(self, pair: str, trade: 'Trade', current_time: datetime,
                         current_rate: float, current_profit: float, **kwargs) -> float:
-        return 1
 
-    # def informative_pairs(self):
-    #     return []
+        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+        last_candle = dataframe.iloc[-1].squeeze()
+        previous_candle = dataframe.iloc[-2].squeeze()
+
+        if (last_candle is not None) & (previous_candle is not None):
+            # In dry/live runs trade open date will not match candle open date therefore it must be
+            # rounded.
+            trade_date = timeframe_to_prev_date(self.timeframe, trade.open_date_utc)
+            # Look up trade candle.
+            trade_candle = dataframe.loc[dataframe['date'] == trade_date]
+
+            # trade_candle may be empty for trades that just opened as it is still incomplete.
+            if not trade_candle.empty:
+                trade_candle = trade_candle.squeeze()
+
+                if (last_candle['srsi_k'] > 80) & (current_profit > self.srsi_k_min_profit.value):
+                    return -0.0001
+
+                if (previous_candle['close'] < previous_candle['upper']) & (current_rate > last_candle['upper']) & (
+                        current_profit > self.above_upper_min_profit.value):
+                    return -0.0001
+
+                limit = trade.open_rate + ((trade.open_rate - trade_candle['shifted_lower_cloud']) * self.limit_factor.value)
+
+                if current_rate > limit:
+                    return -0.0001
+
+                if current_rate < (trade_candle['shifted_lower_cloud'] * self.lower_cloud_factor.value):
+                    return -0.0001
+
+        return -0.99
 
     def populate_indicators(self, df: DataFrame, metadata: dict) -> DataFrame:
         df['upper'] = bollinger_bands(df['close'], moving_average='hma', length=20, mult=2.5)['upper']
@@ -169,7 +199,7 @@ class NowotnyIchimokuV2(IStrategy):
 
         double_shifted_upper_cloud = df['upper_cloud'].shift(50)
 
-        close_above_shifted_upper_cloud = df['close'] > df['shifted_upper_cloud'] * 1.04
+        close_above_shifted_upper_cloud = df['close'] > df['shifted_upper_cloud'] * self.close_above_shifted_upper_cloud.value
         close_above_shifted_lower_cloud = df['close'] > df['shifted_lower_cloud']
         close_above_double_shifted_upper_cloud = df['close'] > double_shifted_upper_cloud
 
@@ -184,19 +214,19 @@ class NowotnyIchimokuV2(IStrategy):
                            close_above_shifted_conversion_line & \
                            close_above_double_shifted_upper_cloud
 
-        df['buy_allowed'] = -df['is_cloud_green']
-        for i in range(101, len(df)):
-            df.loc[i, 'buy_allowed'] = df.loc[i - 1, 'buy_allowed']
+        df['buy'] = False
+        df['buy_allowed'] = True
+        for row in df.itertuples():
+            if row.Index > 100:
+                df.loc[row.Index, 'buy_allowed'] = df.at[row.Index - 1, 'buy_allowed']
 
-            if df.loc[i - 1, 'buy']:
-                df.loc[i, 'buy_allowed'] = False
+                if df.at[row.Index - 1, 'buy']:
+                    df.loc[row.Index, 'buy_allowed'] = False
 
-            elif not df.loc[i, 'is_cloud_green']:
-                df[i, 'buy_allowed'] = True
+                if not df.at[row.Index, 'is_cloud_green']:
+                    df.loc[row.Index, 'buy_allowed'] = True
 
-        df.loc[
-            (df['buy_allowed'] & df['should_buy'])
-            , 'buy'] = 1
+                df.loc[row.Index, 'buy'] = df.at[row.Index, 'buy_allowed'] & df.at[row.Index, 'should_buy']
 
         return df
 
